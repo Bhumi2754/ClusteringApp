@@ -1,0 +1,14 @@
+streamlit>=1.25.0
+pandas>=2.0
+numpy>=1.25
+scikit-learn>=1.2
+plotly>=5.10
+scipy>=1.10
+matplotlib>=3.7
+python-dotenv
+joblib
+pytest
+plotly
+requests
+seaborn
+matplotlib
