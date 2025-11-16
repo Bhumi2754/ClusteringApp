@@ -66,7 +66,7 @@ import numpy as np
 import os
 
 # ---------- Configuration ----------
-n_rows = 10000   # 👈 change this number to any size (e.g., 10000 or 50000)
+n_rows = 5000   # 👈 change this number to any size (e.g., 10000 or 50000)
 
 np.random.seed(42)
 
@@ -94,3 +94,49 @@ df.to_csv(file_path, index=False)
 
 print(f"✅ Dataset created: {file_path}")
 print(f"Rows: {n_rows}, Columns: {len(df.columns)}")
+
+
+
+
+
+
+# import pandas as pd
+# import numpy as np
+# import os
+
+# # ---------- Configuration ----------
+# n_rows = 10000   # 👈 change this number to any size (e.g., 10000 or 50000)
+
+# np.random.seed(42)
+
+# # ---------- Create Real Date Column ----------
+# # Generates a date range starting from 2020-01-01
+# # Automatically adjusts length to match n_rows
+# date_series = pd.date_range(start="2020-01-01", periods=n_rows, freq="D")
+
+# # ---------- Generate Synthetic Data ----------
+# data = {
+#     "Date": date_series,                               # 👈 REAL DATE COLUMN
+#     "NPP": np.random.normal(50, 15, n_rows),           # Net Primary Productivity
+#     "Biomass": np.random.normal(100, 25, n_rows),      # Biomass
+#     "Temperature": np.random.uniform(5, 35, n_rows),   # Environmental temperature
+#     "Trophic_Efficiency": np.random.uniform(0, 1, n_rows),  # Trophic level efficiency
+#     "Energy_Flow": np.random.exponential(10.0, n_rows),     # Random energy flow
+#     "lat": np.random.uniform(-90, 90, n_rows),
+#     "lon": np.random.uniform(-180, 180, n_rows)
+# }
+
+# df = pd.DataFrame(data)
+
+# # ---------- Add Some Missing Values ----------
+# for col in df.columns:
+#     df.loc[df.sample(frac=0.05, random_state=42).index, col] = np.nan
+
+# # ---------- Save to CSV ----------
+# os.makedirs("data", exist_ok=True)
+# file_path = os.path.join("data", "large_sample_data.csv")
+# df.to_csv(file_path, index=False)
+
+# print(f"✅ Dataset created: {file_path}")
+# print(f"Rows: {n_rows}, Columns: {len(df.columns)}")
+

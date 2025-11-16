@@ -1,243 +1,338 @@
 import streamlit as st
 import pandas as pd
-import os
 import numpy as np
-import plotly.express as px
-from sklearn.cluster import KMeans, DBSCAN, AgglomerativeClustering
-from sklearn.preprocessing import StandardScaler, MinMaxScaler
-from sklearn.metrics import silhouette_score
+import os
+import io
+from datetime import datetime
 from sklearn.decomposition import PCA
+from sklearn.preprocessing import StandardScaler, MinMaxScaler
+from sklearn.cluster import KMeans, DBSCAN, AgglomerativeClustering, MiniBatchKMeans
+from sklearn.metrics import silhouette_score, davies_bouldin_score, calinski_harabasz_score
+import plotly.express as px
+import plotly.graph_objects as go
+from reportlab.lib.pagesizes import A4, portrait
+from reportlab.pdfgen import canvas
+import time
 
-# ------------------ Page Setup ------------------
-st.set_page_config(
-    page_title="🌿 Clustering Ecosystem Dashboard",
-    page_icon="🌍",
-    layout="wide"
-)
-
-# ------------------ Styling ------------------
+# ---------------- Page config & Theme ----------------
+st.set_page_config(page_title="🌿 Clustering Explorer", page_icon="🌍", layout="wide")
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Poppins:wght@400;600&display=swap');
-
-[data-testid="stAppViewContainer"] {
-    background: linear-gradient(to right, #f7fff9, #e9f7ef);
-    color: #0a3d2e;
-    font-family: 'Poppins', sans-serif;
-}
-
-/* Sidebar */
-[data-testid="stSidebar"] {
-    background-color: #f0fff4;
-    border-right: 3px solid #2a9d8f;
-}
-
-/* Headings */
-h1, h2, h3 {
-    color: #1b4332;
-    font-weight: 600;
-}
-
-/* Buttons */
-.stButton>button {
-    background-color: #2a9d8f;
-    color: white;
-    border-radius: 10px;
-    font-weight: 600;
-    transition: all 0.3s ease;
-}
-.stButton>button:hover {
-    background-color: #1f776b;
-    transform: scale(1.04);
-}
-
-/* Dataframes */
-[data-testid="stDataFrame"] {
-    border-radius: 10px;
-    background-color: #ffffff;
-    box-shadow: 0 0 10px rgba(0,0,0,0.05);
-}
+* { font-family: 'Poppins', sans-serif; }
+[data-testid="stAppViewContainer"] { background: #f3f9ff; color: #003566; padding: 12px; }
+[data-testid="stSidebar"] { background: #e3f1ff; border-right: 3px solid #0077b6; }
+.stButton>button { background: #0077b6; color:white; border-radius:10px; padding:8px 16px; font-weight:600; }
+.stButton>button:hover { background:#005a8c; transform:scale(1.02); }
+.card { background: white; padding: 20px; border-radius:12px; box-shadow: 0 10px 30px rgba(0,0,0,0.15); margin-bottom:20px; }
+[data-testid="stDataFrame"] { border-radius:10px; box-shadow: 0 6px 18px rgba(0,0,0,0.08); background:white; }
+.mapboxgl-map { border-radius:10px !important; }
 </style>
 """, unsafe_allow_html=True)
 
-# ------------------ Header ------------------
-col1, col2 = st.columns([1, 6])
-logo_path = os.path.join("assets", "logo.png")
-with col1:
-    if os.path.exists(logo_path):
-        st.image(logo_path, width=100)
-with col2:
-    st.markdown("<h1>🌿 Clustering Ecosystem Patches</h1>", unsafe_allow_html=True)
-    st.markdown("<h4>Analyzing Energy Flow Patterns Using Machine Learning</h4>", unsafe_allow_html=True)
+# ---------------- Header ----------------
+st.title("🌿 Clustering Explorer Dashboard")
+st.subheader("Analyzing Energy Flow Patterns, clusters, and trends")
 
-st.markdown("---")
+# ---------------- Load dataset ----------------
+uploaded = st.sidebar.file_uploader("Upload CSV file (optional)", type=["csv"])
+if uploaded:
+    df = pd.read_csv(uploaded)
+    source = "Uploaded CSV"
+else:
+    CSV_PATH = "data/large_sample_data.csv"
+    if os.path.exists(CSV_PATH):
+        df = pd.read_csv(CSV_PATH)
+        source = CSV_PATH
+    else:
+        st.error("No dataset found. Please upload a CSV or place a file at 'data/large_sample_data.csv'")
+        st.stop()
+st.sidebar.caption(f"Data source: {source}")
 
-# ------------------ Refresh Button ------------------
-if st.button("🔄 Refresh Dashboard"):
-    st.rerun()
-
-
-
-# ------------------ Load Dataset ------------------
-csv_path = os.path.join("data", "large_sample_data.csv")
-if not os.path.exists(csv_path):
-    st.error("❌ No dataset found. Please place `sample_data.csv` inside `/data` folder.")
+# ---------------- Sidebar: Features & Preprocessing ----------------
+st.sidebar.header("Data & Preprocessing")
+numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+if not numeric_cols:
+    st.error("No numeric columns found in dataset.")
     st.stop()
 
-df = pd.read_csv(csv_path)
-st.success("✅ Dataset loaded successfully.")
+features = st.sidebar.multiselect("Select columns to use for clustering", numeric_cols, default=numeric_cols[:4])
+if not features:
+    st.error("Select at least one column to continue.")
+    st.stop()
 
-import requests
+scaling_opt = st.sidebar.selectbox("Scaling method", ["None", "StandardScaler", "MinMaxScaler"],
+                                   help="Scale data so all features are comparable. StandardScaler = mean 0, std 1; MinMaxScaler = range 0-1")
+impute_opt = st.sidebar.selectbox("Missing value handling", ["mean", "median", "drop"],
+                                  help="Fill missing values with mean, median, or drop rows with missing values")
+remove_outliers = st.sidebar.checkbox("Remove extreme values (|z|>3)", help="Removes rows with very high or low values in selected columns")
 
-# ---------------- Live Environmental Data (Open-Meteo API Demo) ----------------
-st.markdown("### ☀️ Live Environmental Snapshot")
-city = st.text_input("Enter a city name for current temperature:", "Delhi")
-
-if st.button("Fetch Live Data"):
-    try:
-        resp = requests.get(
-            f"https://geocoding-api.open-meteo.com/v1/search?name={city}&count=1"
-        )
-        geo = resp.json()["results"][0]
-        lat, lon = geo["latitude"], geo["longitude"]
-        weather = requests.get(
-            f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current_weather=true"
-        ).json()
-        temp = weather["current_weather"]["temperature"]
-        wind = weather["current_weather"]["windspeed"]
-        st.success(f"🌡️ Temperature: {temp}°C | 💨 Wind Speed: {wind} km/h at {city}")
-    except Exception as e:
-        st.warning("Could not fetch data. Check your connection or city name.")
-
-
-# ------------------ Sidebar Controls ------------------
-st.sidebar.header("⚙️ Preprocessing & Clustering Settings")
-numeric_cols = df.select_dtypes(include=['float64', 'int64']).columns.tolist()
-
-features = st.sidebar.multiselect("Select features for clustering", numeric_cols, default=numeric_cols[:4])
-scaling_option = st.sidebar.selectbox("Scaling Method", ["None", "StandardScaler", "MinMaxScaler"])
-algo = st.sidebar.selectbox("Select Clustering Algorithm", ["KMeans", "DBSCAN", "Agglomerative Clustering"])
-
-# Sidebar cluster controls
-if algo == "KMeans":
-    n_clusters = st.sidebar.slider("Number of Clusters (k)", 2, 10, 3)
-elif algo == "DBSCAN":
-    eps = st.sidebar.slider("Neighborhood Size (EPS)", 0.1, 5.0, 0.5, step=0.1)
-    min_samples = st.sidebar.slider("Minimum Samples", 1, 20, 5)
-else:
-    n_clusters = st.sidebar.slider("Number of Clusters", 2, 10, 3)
-    linkage = st.sidebar.selectbox("Linkage Method", ["ward", "complete", "average", "single"])
-
-# ------------------ Preprocessing ------------------
-if scaling_option == "StandardScaler":
-    scaler = StandardScaler()
-    df_scaled = scaler.fit_transform(df[features])
-elif scaling_option == "MinMaxScaler":
-    scaler = MinMaxScaler()
-    df_scaled = scaler.fit_transform(df[features])
-else:
-    df_scaled = df[features].values
-
-df_scaled = pd.DataFrame(df_scaled, columns=features)
-if df_scaled.isnull().values.any():
-    df_scaled = df_scaled.fillna(df_scaled.mean())
-
-# ------------------ Clustering ------------------
-if algo == "KMeans":
-    model = KMeans(n_clusters=n_clusters, random_state=42)
-    labels = model.fit_predict(df_scaled)
-elif algo == "DBSCAN":
-    model = DBSCAN(eps=eps, min_samples=min_samples)
-    labels = model.fit_predict(df_scaled)
-else:
-    model = AgglomerativeClustering(n_clusters=n_clusters, linkage=linkage)
-    labels = model.fit_predict(df_scaled)
-
-df["Cluster"] = labels
-
-# ------------------ Data + Cluster Stats ------------------
-st.subheader("📋 Data Overview")
-st.write(f"**Rows:** {df.shape[0]} | **Columns:** {df.shape[1]}")
-st.dataframe(df.head(10), use_container_width=True)
-
-try:
-    sil = silhouette_score(df_scaled, labels)
-    st.metric("🌱 Silhouette Score", f"{sil:.3f}")
-except:
-    st.warning("Silhouette score unavailable for single cluster or noise labels.")
-
-st.markdown("### 🌿 Cluster Statistics")
-cluster_summary = df.groupby("Cluster")[features].mean().round(2)
-st.dataframe(cluster_summary)
-
-# ------------------ 2D PCA Visualization ------------------
-st.markdown("### 🌍 2D Cluster Visualization")
-pca = PCA(n_components=2)
-df_pca = pd.DataFrame(pca.fit_transform(df_scaled), columns=["PCA1", "PCA2"])
-df_pca["Cluster"] = labels
-fig_2d = px.scatter(
-    df_pca,
-    x="PCA1", y="PCA2",
-    color=df_pca["Cluster"].astype(str),
-    color_discrete_sequence=px.colors.qualitative.Set2,
-    title="2D Cluster View (PCA Projection)",
-    template="plotly_white"
+# ---------------- Sidebar: Clustering ----------------
+st.sidebar.header("Clustering Settings")
+algos_to_compare = st.sidebar.multiselect(
+    "Clustering method", ["KMeans","DBSCAN","Agglomerative"], default=["KMeans","DBSCAN"],
+    help="Choose one or more methods to group your data"
 )
-fig_2d.update_traces(marker=dict(size=10, line=dict(width=1, color='DarkSlateGrey')))
-st.plotly_chart(fig_2d, use_container_width=True)
+max_k = st.sidebar.slider("Maximum clusters to test", min_value=4, max_value=20, value=8,
+                          help="Dashboard will test up to this number of clusters and pick the best automatically")
 
-# ------------------ 3D Cluster Visualization ------------------
-st.markdown("### 🪐 3D Cluster Visualization")
-pca3 = PCA(n_components=3)
-df_3d = pd.DataFrame(pca3.fit_transform(df_scaled), columns=["X", "Y", "Z"])
-df_3d["Cluster"] = labels
-fig_3d = px.scatter_3d(
-    df_3d, x="X", y="Y", z="Z",
-    color=df_3d["Cluster"].astype(str),
-    color_discrete_sequence=px.colors.qualitative.Vivid,
-    title="Interactive 3D Cluster Map",
-    opacity=0.8
-)
-fig_3d.update_traces(marker=dict(size=8, symbol="circle", line=dict(width=1, color="black")))
-fig_3d.update_layout(scene=dict(
-    xaxis=dict(title='Component 1'),
-    yaxis=dict(title='Component 2'),
-    zaxis=dict(title='Component 3'),
-    bgcolor='rgba(245,255,245,0.8)'
-))
-st.plotly_chart(fig_3d, use_container_width=True)
+# ---------------- Sidebar: Time periods / Simulation ----------------
+st.sidebar.header("Time slices / Simulation")
+n_periods = st.sidebar.slider("Number of dataset periods", 2, 12, 6,
+                              help="Split your data into periods to see how clusters change over time")
+simulate = st.sidebar.checkbox("Enable step-by-step simulation")
+sim_rows = st.sidebar.slider("Rows to simulate", 50, min(5000,len(df)), value=min(500,len(df))) if simulate else len(df)
 
-# ------------------ Map Visualization ------------------
-if {"lat", "lon"}.issubset(df.columns):
-    st.markdown("### 🗺️ Geo Map View")
-    fig_map = px.scatter_mapbox(
-        df, lat="lat", lon="lon",
-        color=df["Cluster"].astype(str),
-        hover_data=features,
-        zoom=3,
-        mapbox_style="carto-positron",
-        title="Cluster Distribution on Map",
-        height=450
-    )
-    st.plotly_chart(fig_map, use_container_width=True)
+# ---------------- Preprocessing & clustering functions ----------------
+@st.cache_data
+def preprocess_df(df_sub, features, impute, scale, outliers):
+    tmp = df_sub[features].copy().astype(float)
+    if impute == "drop": tmp = tmp.dropna()
+    elif impute == "mean": tmp = tmp.fillna(tmp.mean())
+    else: tmp = tmp.fillna(tmp.median())
+    if outliers:
+        arr = tmp.to_numpy()
+        z = (arr - arr.mean(axis=0)) / (arr.std(axis=0) + 1e-9)
+        mask = np.all(np.abs(z) <= 3, axis=1)
+        tmp = tmp.iloc[mask]
+    if scale == "StandardScaler":
+        tmp[:] = StandardScaler().fit_transform(tmp)
+    elif scale == "MinMaxScaler":
+        tmp[:] = MinMaxScaler().fit_transform(tmp)
+    return tmp
 
+@st.cache_data
+def choose_best_k(X, min_k=2, max_k=8):
+    best_k, best_score = min_k, -1
+    for k in range(min_k, max_k+1):
+        if len(X) < k: continue
+        km = MiniBatchKMeans(n_clusters=k, random_state=42, batch_size=256).fit(X)
+        labs = km.labels_
+        if len(set(labs))<2: continue
+        sc = silhouette_score(X, labs)
+        if sc > best_score:
+            best_score = sc
+            best_k = k
+    return best_k
 
-# ------------------ Download Results ------------------
-st.markdown("---")
-csv_data = df.to_csv(index=False).encode("utf-8")
-st.download_button("⬇️ Download Clustered Data (CSV)", csv_data, "clustered_results.csv", "text/csv")
+def metrics_from_labels(X, labels):
+    out = {}
+    try: out['silhouette'] = silhouette_score(X, labels) if len(set(labels))>=2 else np.nan
+    except: out['silhouette']=np.nan
+    try: out['davies_bouldin']=davies_bouldin_score(X, labels) if len(set(labels))>=2 else np.nan
+    except: out['davies_bouldin']=np.nan
+    try: out['calinski_harabasz']=calinski_harabasz_score(X, labels) if len(set(labels))>=2 else np.nan
+    except: out['calinski_harabasz']=np.nan
+    out['n_clusters']=len([l for l in set(labels) if l!=-1])
+    out['counts']=dict(pd.Series(labels).value_counts().to_dict())
+    return out
 
-st.success("🌳 Analysis Complete! Scroll down to explore all visualizations.")
-# ---------------- Community Feedback ----------------
-st.markdown("### 💬 Community Feedback")
-user_name = st.text_input("Your Name:")
-user_feedback = st.text_area("Share your feedback or sustainability idea:")
-if st.button("Submit Feedback"):
-    if user_name and user_feedback:
-        with open("data/user_feedback.csv", "a", encoding="utf-8") as f:
-            f.write(f"{user_name},{user_feedback}\n")
-        st.success("🌿 Thank you for sharing your thoughts!")
+def centroid_insight_text(centroid_series, overall_mean):
+    parts=[]
+    for feat,val in centroid_series.items():
+        mean = overall_mean.get(feat,0)
+        pct=(val-mean)/(abs(mean)+1e-9)
+        if pct>0.25: parts.append(f"{feat} high (+{pct*100:.0f}%)")
+        elif pct<-0.25: parts.append(f"{feat} low ({pct*100:.0f}%)")
+        else: parts.append(f"{feat} normal")
+    return "; ".join(parts)
+
+# ---------------- Prepare dataset periods ----------------
+df_work = df.iloc[:sim_rows].copy().reset_index(drop=True)
+indices_split = np.array_split(df_work.index.to_numpy(), n_periods)
+period_names = [f"Period {i+1}" for i in range(len(indices_split))]
+period_col = np.empty(len(df_work),dtype=object)
+for pname, idxs in zip(period_names, indices_split):
+    period_col[idxs]=pname
+df_work["_period"]=period_col
+periods = list(sorted(df_work["_period"].unique(), key=lambda x:int(x.split(" ")[1])))
+overall_means_raw = df[features].mean().to_dict()
+
+# ---------------- Cluster per period ----------------
+@st.cache_data
+def process_periods(df_work, periods, features, algos, impute, scale, outliers, max_k):
+    period_results = {}
+    for p in periods:
+        sub = df_work[df_work["_period"]==p]
+        proc = preprocess_df(sub, features, impute, scale, outliers)
+        if proc.shape[0]==0:
+            period_results[p] = {"error":"no rows after preprocessing"}
+            continue
+        X = proc.values
+        best_k = choose_best_k(X, min_k=2, max_k=min(max_k,int(np.sqrt(len(X)))))
+        algos_info={}
+        for algo_name in algos:
+            try:
+                if algo_name=="KMeans": model = MiniBatchKMeans(n_clusters=best_k, random_state=42, batch_size=256).fit(X); labels=model.labels_
+                elif algo_name=="DBSCAN": model = DBSCAN(eps=0.5, min_samples=5).fit(X); labels=model.labels_
+                else: model = AgglomerativeClustering(n_clusters=best_k).fit(X); labels=model.labels_
+                metrics = metrics_from_labels(X, labels)
+                centroids = pd.DataFrame(columns=features)
+                for lab in sorted(set(labels)):
+                    if lab==-1: continue
+                    members = proc.iloc[np.where(labels==lab)[0]]
+                    if len(members)>0: centroids.loc[lab] = members.mean().values
+                algos_info[algo_name] = {"model":model, "labels":labels, "metrics":metrics, "centroids":centroids}
+            except Exception as e:
+                algos_info[algo_name] = {"error":str(e)}
+        period_results[p]={"proc":proc,"X":X,"best_k":best_k,"algos":algos_info}
+    return period_results
+
+period_results = process_periods(df_work, periods, features, algos_to_compare, impute_opt, scaling_opt, remove_outliers, max_k)
+
+# ---------------- Dataset Overview ----------------
+st.markdown('<div class="card">', unsafe_allow_html=True)
+st.subheader("Dataset Overview")
+st.write(f"Rows: {len(df_work)}, Numeric columns: {len(features)}, Dataset periods: {len(periods)}")
+st.write("Periods:", ", ".join(periods))
+st.markdown("</div>", unsafe_allow_html=True)
+
+# ---------------- Centroid Timeline ----------------
+st.markdown('<div class="card">', unsafe_allow_html=True)
+st.subheader("Cluster Center Timeline")
+algo_timeline = st.selectbox("Select method for timeline", algos_to_compare)
+feature_timeline = st.selectbox("Select feature to see cluster changes", features)
+all_cluster_ids=set()
+centroids_by_period={}
+for p in periods:
+    info = period_results[p]["algos"].get(algo_timeline, {})
+    cent = info.get("centroids") if info else pd.DataFrame(columns=features)
+    centroids_by_period[p]=cent
+    if isinstance(cent, pd.DataFrame) and not cent.empty:
+        all_cluster_ids.update(cent.index.tolist())
+if all_cluster_ids:
+    fig = go.Figure()
+    for cid in sorted(all_cluster_ids):
+        yvals = [float(centroids_by_period[p].loc[cid,feature_timeline]) if cid in centroids_by_period[p].index else np.nan for p in periods]
+        fig.add_trace(go.Scatter(x=periods, y=yvals, mode="lines+markers", name=f"Cluster {cid}"))
+    fig.update_layout(title=f"Cluster center changes for {feature_timeline} ({algo_timeline})", xaxis_title="Dataset Period", yaxis_title=feature_timeline, template="plotly_white")
+    st.plotly_chart(fig, use_container_width=True)
+else:
+    st.info("No cluster centers to display.")
+st.markdown("</div>", unsafe_allow_html=True)
+
+# ---------------- Radar Chart ----------------
+st.markdown('<div class="card">', unsafe_allow_html=True)
+st.subheader("Cluster Feature Radar Chart")
+rad_period = st.selectbox("Select period for radar chart", periods)
+rad_algo = st.selectbox("Select method for radar chart", algos_to_compare)
+rad_info = period_results[rad_period]["algos"].get(rad_algo, {})
+rad_centroids = rad_info.get("centroids")
+if rad_centroids is None or rad_centroids.empty:
+    st.info("No cluster centers available for radar chart.")
+else:
+    dfc = rad_centroids.astype(float)
+    minv, maxv = dfc.min(), dfc.max()
+    dfn = (dfc - minv)/(maxv - minv + 1e-9)
+    categories = list(dfn.columns)
+    fig=go.Figure()
+    for idx,row in dfn.iterrows():
+        vals=row.tolist()
+        fig.add_trace(go.Scatterpolar(r=vals+[vals[0]],theta=categories+[categories[0]],fill='toself',name=f"Cluster {idx}"))
+    fig.update_layout(polar=dict(radialaxis=dict(visible=True,range=[0,1])),showlegend=True,template="plotly_white")
+    st.plotly_chart(fig,use_container_width=True)
+st.markdown("</div>", unsafe_allow_html=True)
+
+# ---------------- PCA 2D Scatter ----------------
+st.markdown('<div class="card">', unsafe_allow_html=True)
+st.subheader("2D PCA View & Map")
+vis_period = st.selectbox("Select period for PCA", periods)
+vis_algo = st.selectbox("Select method for PCA", algos_to_compare)
+vis_info = period_results[vis_period]["algos"].get(vis_algo, {})
+if "labels" in vis_info:
+    labels = vis_info["labels"]
+    proc = period_results[vis_period]["proc"].copy()
+    proc["Cluster"]=labels.astype(str)
+    pca2 = PCA(n_components=2).fit_transform(proc[features])
+    proc["PCA1"], proc["PCA2"] = pca2[:,0], pca2[:,1]
+    fig2 = px.scatter(proc, x="PCA1",y="PCA2",color="Cluster",hover_data=features,title=f"PCA 2D — {vis_period} ({vis_algo})",template="plotly_white")
+    st.plotly_chart(fig2,use_container_width=True)
+    if not {"lat","lon"}.issubset(proc.columns):
+        proc["lat"]=np.interp(pca2[:,0],(pca2[:,0].min(),pca2[:,0].max()),(-20,55))
+        proc["lon"]=np.interp(pca2[:,1],(pca2[:,1].min(),pca2[:,1].max()),(-140,140))
+    figmap = px.scatter_mapbox(proc,lat="lat",lon="lon",color="Cluster",hover_data=features,zoom=1.5,mapbox_style="carto-positron",title=f"Map — {vis_period} ({vis_algo})")
+    st.plotly_chart(figmap,use_container_width=True)
+else:
+    st.info("No visualization available.")
+st.markdown("</div>", unsafe_allow_html=True)
+
+# ---------------- Cluster Insights ----------------
+st.markdown('<div class="card">', unsafe_allow_html=True)
+st.subheader("Cluster Insights")
+ins_period = st.selectbox("Select period for insights", periods)
+ins_algo = st.selectbox("Select method for insights", algos_to_compare)
+ins_info = period_results[ins_period]["algos"].get(ins_algo,{})
+ins_centroids = ins_info.get("centroids")
+if ins_centroids is not None and not ins_centroids.empty:
+    for cid in ins_centroids.index:
+        txt = centroid_insight_text(ins_centroids.loc[cid].to_dict(), overall_means_raw)
+        st.markdown(f"**Cluster {cid}:** {txt}")
+else:
+    st.info("No centroid data for insights.")
+st.markdown("</div>", unsafe_allow_html=True)
+
+# ---------------- PDF Report ----------------
+def make_pdf(period,algo,centroids,metrics):
+    buf=io.BytesIO()
+    c=canvas.Canvas(buf,pagesize=portrait(A4))
+    w,h=portrait(A4)
+    c.setFont("Helvetica-Bold",16)
+    c.drawString(40,h-50,"Clustering Analysis Report")
+    c.setFont("Helvetica",10)
+    c.drawString(40,h-70,f"Period: {period}  Method: {algo}  Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    y=h-100
+    c.setFont("Helvetica-Bold",12)
+    c.drawString(40,y,"Metrics:")
+    y-=16
+    for k,v in (metrics or {}).items():
+        c.setFont("Helvetica",10)
+        c.drawString(48,y,f"{k}: {v}")
+        y-=12
+        if y<80: c.showPage(); y=h-50
+    y-=8
+    c.setFont("Helvetica-Bold",12)
+    c.drawString(40,y,"Cluster Centers:")
+    y-=14
+    c.setFont("Helvetica",10)
+    if centroids is not None and not centroids.empty:
+        for idx,row in centroids.iterrows():
+            line=f"Cluster {idx}: "+", ".join([f"{f}={row[f]:.3f}" for f in centroids.columns])
+            c.drawString(48,y,line)
+            y-=12
+            if y<80: c.showPage(); y=h-50
     else:
-        st.warning("Please fill in both fields before submitting.")
+        c.drawString(48,y,"No cluster centers available.")
+    c.showPage(); c.save()
+    buf.seek(0)
+    return buf.read()
 
- 
+st.markdown('<div class="card">', unsafe_allow_html=True)
+st.subheader("Download PDF Report")
+pdf_period = st.selectbox("Select period for PDF", periods)
+pdf_algo = st.selectbox("Select method for PDF", algos_to_compare)
+pdf_info = period_results[pdf_period]["algos"].get(pdf_algo,{})
+pdf_centroids = pdf_info.get("centroids")
+pdf_metrics = pdf_info.get("metrics")
+if st.button("Generate PDF"):
+    pdf_bytes = make_pdf(pdf_period,pdf_algo,pdf_centroids,pdf_metrics)
+    st.download_button("Download PDF", data=pdf_bytes, file_name=f"Clustering_{pdf_period}_{pdf_algo}.pdf", mime="application/pdf")
+st.markdown("</div>", unsafe_allow_html=True)
+
+# ---------------- Help / User Guide ----------------
+st.markdown('<div class="card">', unsafe_allow_html=True)
+st.subheader("📘 How to use this Dashboard")
+with st.expander("Click to see instructions"):
+    st.markdown("""
+1. **Upload CSV**: Use numeric columns only for clustering.
+2. **Select Features**: Pick 2–6 columns for clustering analysis.
+3. **Scaling & Missing Values**: StandardScaler / MinMaxScaler recommended.
+4. **Clustering Method**: Compare multiple methods (KMeans, DBSCAN, Agglomerative).
+5. **Simulation / Periods**: Split your dataset to see clusters evolve.
+6. **Visualization**:
+   - Cluster Center Timeline: How clusters change for a feature.
+   - Radar Chart: Compare feature distribution in clusters.
+   - PCA 2D & Map: See cluster patterns in 2D or pseudo-map.
+7. **Insights**: Read cluster descriptions automatically generated.
+8. **PDF Report**: Download full clustering report for any period & method.
+""")
+st.markdown("</div>", unsafe_allow_html=True)
+
