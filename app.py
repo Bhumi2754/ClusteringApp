@@ -30,8 +30,8 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ---------------- Header ----------------
-st.title("🌿 Clustering Explorer Dashboard")
-st.subheader("Analyzing Energy Flow Patterns, clusters, and trends")
+st.title("🌿 Uncovering Ecological Patterns")
+st.subheader("Energy-flow Driven Clustering for Researchers and Decision-Makers")
 
 # ---------------- Load dataset ----------------
 uploaded = st.sidebar.file_uploader("Upload CSV file (optional)", type=["csv"])
